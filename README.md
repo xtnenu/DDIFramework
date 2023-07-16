@@ -9,5 +9,5 @@ Thank you very much for your interest in our work. Currently, the main.py in the
 - cudnn==7.0
 - networkx
 - pandas
-- scio
+- scipy
 
