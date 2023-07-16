@@ -1,3 +1,4 @@
+import pickle
 import time
 import numpy as np
 import tensorflow as tf
@@ -6,6 +7,7 @@ from models import GAT, HeteGAT, HeteGAT_multi
 from utils import process
 from prepare_data import random_select
 from scipy import sparse
+# 禁用gpu
 import os
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -110,6 +112,42 @@ def load_data_dblp(path='data\\2SIDES_v4\MAT\drugbank0.mat'):
     return rownetworks, truefeatures_list, y_train, y_val, y_test, train_mask, val_mask, test_mask
     #return rownetworks, truefeatures, y_train, y_val, y_test, train_mask, val_mask, test_mask
 
+def load_casestudy(path):
+    data = sio.loadmat(path)
+    truelabels, truefeatures = data['label'], data['feature'].astype(float)
+    N = truefeatures.shape[0]
+    print(N)
+
+    IDI = data["IDI"]
+
+    rownetworks = [IDI - np.eye(N, dtype='uint8'),
+                   np.eye(N, dtype='uint8') - np.eye(N, dtype='uint8')]  # , data['PTP'] - np.eye(N)]
+    # print()
+    y = truelabels
+    train_idx = data['train_idx']
+    val_idx = data['val_idx']
+    test_idx = data['test_idx']
+
+    train_mask = sample_mask(train_idx, y.shape[0])
+    val_mask = sample_mask(val_idx, y.shape[0])
+    test_mask = sample_mask(test_idx, y.shape[0])
+
+    y_train = np.zeros(y.shape)
+    y_val = np.zeros(y.shape)
+    y_test = np.zeros(y.shape)
+    y_train[train_mask, :] = y[train_mask, :]
+    y_val[val_mask, :] = y[val_mask, :]
+    y_test[test_mask, :] = y[test_mask, :]
+
+    print('y_train:{}, y_val:{}, y_test:{}, train_idx:{}, val_idx:{}, test_idx:{}'.format(y_train.shape,
+                                                                                          y_val.shape,
+                                                                                          y_test.shape,
+                                                                                          train_idx.shape,
+                                                                                          val_idx.shape,
+                                                                                          test_idx.shape))
+    truefeatures_list = [truefeatures, truefeatures, truefeatures]
+    return rownetworks, truefeatures_list, y_train, y_val, y_test, train_mask, val_mask, test_mask
+
 
 # use adj_list as fea_list, have a try~
 adj_list, fea_list, y_train, y_val, y_test, train_mask, val_mask, test_mask = load_data_dblp()
@@ -196,7 +234,7 @@ with tf.Graph().as_default():
     # optimzie
     train_op = model.training(loss, lr, l2_coef)
 
-    saver = tf.train.Saver()
+    #saver = tf.train.Saver()
 
     init_op = tf.group(tf.global_variables_initializer(),
                        tf.local_variables_initializer())
@@ -379,7 +417,8 @@ with tf.Graph().as_default():
 
         ############test############################
         path_test = "data\\result\\test"
-        saver.restore(sess, checkpt_file1)
+        sess.run(tf.global_variables_initializer())
+        sess.run(tf.local_variables_initializer())
         print('load model from : {}'.format(checkpt_file1))
         ts_size = fea_list[0].shape[0]
         ts_step = 0
@@ -390,21 +429,14 @@ with tf.Graph().as_default():
         test_name_acc = os.path.join(path_test, "acc")
         test_name_loss = os.path.join(path_test, "loss")
         while ts_step * batch_size < ts_size:
-            # fd1 = {ftr_in: features[ts_step * batch_size:(ts_step + 1) * batch_size]}
+
             fd1 = {i: d[ts_step * batch_size:(ts_step + 1) * batch_size]
                    for i, d in zip(ftr_in_list, fea_list)}
             fd2 = {i: d[ts_step * batch_size:(ts_step + 1) * batch_size]
                    for i, d in zip(bias_in_list, biases_list)}
             fd3 = {lbl_in: y_test[ts_step * batch_size:(ts_step + 1) * batch_size],
                    msk_in: test_mask[ts_step * batch_size:(ts_step + 1) * batch_size],
-        # while ts_step * batch_size < 1:
-        #     # fd1 = {ftr_in: features[ts_step * batch_size:(ts_step + 1) * batch_size]}
-        #     fd1 = {i: d[-1:]
-        #            for i, d in zip(ftr_in_list, fea_list)}
-        #     fd2 = {i: d[-1:]
-        #            for i, d in zip(bias_in_list, biases_list)}
-        #     fd3 = {lbl_in: y_test[-1:],
-        #            msk_in: test_mask[-1:],
+
                    is_train: False,
                    attn_drop: 0.0,
                    ffd_drop: 0.0}
@@ -421,7 +453,8 @@ with tf.Graph().as_default():
         print('Test loss:', ts_loss / ts_step,
               '; Test accuracy:', ts_acc / ts_step)
         if ts_acc / ts_step > tacc_mx:
-            saver.save(sess, checkpt_file1)
+            #saver.save(sess, checkpt_file1)
+            pass
         tacc_mx = np.max((ts_acc / ts_step, tacc_mx))
         tlss_mn = np.min((ts_loss / ts_step, tlss_mn))
         test_loss_lst.append(ts_loss / ts_step)
@@ -432,28 +465,23 @@ with tf.Graph().as_default():
 
         print('start knn, kmean.....')
         xx = np.expand_dims(jhy_final_embedding, axis=0)[test_mask]
-        """
-        for sample in xx:
-            print(sample)
-        """
   
-        from numpy import linalg as LA
 
-        # xx = xx / LA.norm(xx, axis=1)
         yy = y_test[test_mask[-1:]]
 
         print('xx: {}, yy: {}'.format(xx.shape, yy.shape))
-        from jhyexp import my_KNN, my_Kmeans#, my_TSNE, my_Linear
+        from baseline import my_KNN, my_Kmeans,Baseline#, my_TSNE, my_Linear
 
-        #my_KNN(xx, yy)
-        for i in range(2,11):
-            print("k=",i)
-            my_KNN(xx, yy,k=i)
-        print("10 fold")
-        for i in range(2,11):
-            print("k=",i)
-            my_KNN(xx,yy,k=i,split_list=[0.1, 0.9],time=10)
-        #case study
+        Knn=my_KNN(xx, yy)
+        f=open("MLP.pkl","wb")
 
-        #my_Kmeans(xx, yy,k=1)
+        print("--svm--")
+        Baseline(xx,yy,cls="svm")
+        print("--rf--")
+        Baseline(xx, yy, cls="rf")
+        print("--gbdt--")
+        Baseline(xx, yy, cls="gbdt")
+        print("--mlp--")
+        MLP=Baseline(xx,yy,cls="mlp")
+
         sess.close()
